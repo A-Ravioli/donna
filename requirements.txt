@@ -1,0 +1,14 @@
+openai>=1.1.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+stripe>=6.0.0
+langchain>=0.0.285
+langchain-core>=0.1.0
+resend>=0.6.0
+slack-sdk>=3.25.0
+discord.py>=2.3.0
+pymsteams>=0.2.2
+google-api-python-client>=2.108.0
+google-auth-oauthlib>=1.0.0
+imaplib2>=3.6
+oauth2client>=4.1.3 
