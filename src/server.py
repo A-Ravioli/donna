@@ -8,6 +8,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from datetime import datetime, timezone
 import stripe
+from langchain.memory import ConversationBufferMemory, SQLiteMemory
+from langchain_core.messages import HumanMessage, AIMessage
 import resend
 import os
 from dotenv import load_dotenv
@@ -79,21 +81,51 @@ SUBSCRIPTION_CANCELLATION_MESSAGE = (
 
 # SQLite database setup
 def init_db():
-    conn = sqlite3.connect("conversations.db")
+    conn = sqlite3.connect("messages.db")
     c = conn.cursor()
     c.execute(
-        """CREATE TABLE IF NOT EXISTS conversations
-                 (chat_guid TEXT PRIMARY KEY, thread_id TEXT, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"""
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY,
+            chat_guid TEXT,
+            sender TEXT,
+            message TEXT,
+            message_guid TEXT UNIQUE,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
     )
     c.execute(
-        """CREATE TABLE IF NOT EXISTS messages
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  chat_guid TEXT,
-                  sender TEXT,
-                  message TEXT,
-                  message_guid TEXT UNIQUE,
-                  timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (chat_guid) REFERENCES conversations(chat_guid))"""
+        """
+        CREATE TABLE IF NOT EXISTS threads (
+            chat_guid TEXT PRIMARY KEY,
+            thread_id TEXT
+        )
+        """
+    )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY,
+            status TEXT,
+            phone_number TEXT,
+            email TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    
+    # Create memory table for storing conversation summaries and key information
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory (
+            id INTEGER PRIMARY KEY,
+            chat_guid TEXT,
+            memory_type TEXT,
+            content TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
     )
     conn.commit()
     conn.close()
@@ -660,7 +692,38 @@ class PostHandler(BaseHTTPRequestHandler):
 
         if is_first_message:
             self.send_welcome_message(chat_guid)
+            # Initialize memory for new user
+            initial_summary = f"New conversation started on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}."
+            save_memory(chat_guid, "summary", initial_summary)
             return
+
+        # Analyze user sentiment (for messages longer than 10 characters)
+        if len(message_text) >= 10:
+            analyze_user_sentiment(chat_guid, message_text)
+
+        # Extract any entities from the message that might be useful for memory
+        try:
+            # Only do this extraction for longer messages to save API costs
+            if len(message_text) > 50:
+                entity_prompt = f"Extract any key entities or information from this message that should be remembered: '{message_text}'. Format as a JSON list of key-value pairs. If none, return empty list []."
+                entity_response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You extract structured information from text. Return ONLY a valid JSON array of key-value pairs."},
+                        {"role": "user", "content": entity_prompt}
+                    ],
+                    max_tokens=200
+                )
+                
+                entities = json.loads(entity_response.choices[0].message.content)
+                
+                # Save extracted entities to memory
+                if entities and isinstance(entities, list) and len(entities) > 0:
+                    for entity in entities:
+                        for key, value in entity.items():
+                            save_memory(chat_guid, f"entity_{key}", value)
+        except Exception as e:
+            print(f"Error extracting entities: {e}")
 
         attachments = data.get("data").get("attachments", [])
         file_id = None
@@ -689,6 +752,11 @@ class PostHandler(BaseHTTPRequestHandler):
                 print("Payment request message sent")
         else:
             print("Failed to get message_guid for Alfred's response")
+        
+        # Clean up old memories periodically
+        total_messages = get_total_message_count(chat_guid)
+        if total_messages % 50 == 0:  # Clean up every 50 messages
+            clean_up_memories(chat_guid)
 
     def process_attachments(self, attachments):
         """
@@ -761,16 +829,90 @@ class PostHandler(BaseHTTPRequestHandler):
 
             # Create message content
             content = []
+            
+            # Fetch memory information for the user
+            memories = get_memories(chat_guid)
+            conversation_summary = None
+            user_preferences = None
+            sentiment_data = None
+            important_notes = []
+            entities = {}
+            
+            # Extract relevant memories
+            for mem_type, mem_content, _ in memories:
+                if mem_type == "summary":
+                    conversation_summary = mem_content
+                elif mem_type == "user_preference":
+                    user_preferences = mem_content
+                elif mem_type == "sentiment":
+                    try:
+                        sentiment_data = json.loads(mem_content)
+                    except:
+                        pass
+                elif mem_type == "important_note":
+                    important_notes.append(mem_content)
+                elif mem_type.startswith("entity_"):
+                    entity_key = mem_type.replace("entity_", "")
+                    entities[entity_key] = mem_content
+            
+            # Add memory context if available
+            memory_context = ""
+            if conversation_summary:
+                memory_context += f"Previous conversation summary: {conversation_summary}\n\n"
+            
+            if user_preferences:
+                memory_context += f"User preferences: {user_preferences}\n\n"
+            
+            if sentiment_data:
+                memory_context += f"User's recent sentiment: {sentiment_data.get('sentiment', 'unknown')}, "
+                memory_context += f"emotion: {sentiment_data.get('emotion', 'unknown')}, "
+                memory_context += f"intensity: {sentiment_data.get('intensity', 'unknown')}\n\n"
+            
+            if important_notes:
+                memory_context += "Important notes about this user:\n"
+                for note in important_notes[:3]:  # Limit to 3 most recent notes
+                    memory_context += f"- {note}\n"
+                memory_context += "\n"
+            
+            if entities:
+                memory_context += "Known entities from previous conversations:\n"
+                for key, value in entities.items():
+                    memory_context += f"- {key}: {value}\n"
+                memory_context += "\n"
+            
+            # Get recent conversation history
+            recent_messages = get_recent_messages(chat_guid, 5)
+            conversation_context = ""
+            
+            if recent_messages:
+                conversation_context = "Recent conversation:\n"
+                for sender, msg in recent_messages:
+                    # Format the sender name to be more readable
+                    display_name = "You" if sender == "alfred@gtfol.inc" else "User"
+                    conversation_context += f"{display_name}: {msg}\n"
+            
+            # Create a complete context combining memory and recent messages
+            complete_context = ""
+            if memory_context or conversation_context:
+                complete_context = "CONTEXT (not visible to user):\n"
+                if memory_context:
+                    complete_context += memory_context
+                if conversation_context:
+                    complete_context += conversation_context
+                complete_context += "\nEnd of context. Use this information to provide a more personalized response. Adjust your tone based on the user's sentiment if available.\n\n"
+                
+                # Add context to the message content
+                content.append({"type": "text", "text": complete_context})
 
-            # If it's a group chat, include recent messages for context
+            # If it's a group chat, include additional recent messages for context
             if is_group_chat:
-                recent_messages = get_recent_messages(chat_guid, 15)
-                if recent_messages:
-                    context = "Here are the recent messages in the group chat:\n\n"
-                    for sender, msg in recent_messages:
-                        context += f"{sender}: {msg}\n"
-                    context += "\nPlease consider this context when responding to the following message:\n"
-                    content.append({"type": "text", "text": context})
+                group_recent_messages = get_recent_messages(chat_guid, 15)
+                if group_recent_messages:
+                    group_context = "Here are the recent messages in the group chat:\n\n"
+                    for sender, msg in group_recent_messages:
+                        group_context += f"{sender}: {msg}\n"
+                    group_context += "\nPlease consider this context when responding to the following message:\n"
+                    content.append({"type": "text", "text": group_context})
 
             if message:
                 content.append({"type": "text", "text": message})
@@ -787,6 +929,7 @@ class PostHandler(BaseHTTPRequestHandler):
                     {"type": "image_file", "image_file": {"file_id": file_id}}
                 )
 
+            # Create the message in the thread
             openai.beta.threads.messages.create(
                 thread_id=thread.id, role="user", content=content
             )
@@ -805,6 +948,33 @@ class PostHandler(BaseHTTPRequestHandler):
             # Retrieve Alfred's response
             messages = openai.beta.threads.messages.list(thread_id=thread.id)
             alfred_response = messages.data[0].content[0].text.value
+            
+            # Update conversation summary periodically 
+            # (e.g., every 10 messages or when certain keywords are detected)
+            total_messages = get_total_message_count(chat_guid)
+            if total_messages % 10 == 0:  # Create a summary every 10 messages
+                create_conversation_summary(chat_guid)
+            
+            # Extract any potential user preferences from the current exchange
+            if any(keyword in message.lower() for keyword in ["prefer", "like", "don't like", "hate", "love", "favorite"]):
+                try:
+                    # Extract preferences using OpenAI
+                    preference_prompt = f"Extract any user preferences from this message: '{message}'. If no preferences found, respond with 'None'."
+                    preference_response = openai.ChatCompletion.create(
+                        model="gpt-3.5-turbo",
+                        messages=[
+                            {"role": "system", "content": "You extract user preferences from text. Be concise."},
+                            {"role": "user", "content": preference_prompt}
+                        ],
+                        max_tokens=100
+                    )
+                    preference = preference_response.choices[0].message.content
+                    
+                    if preference.lower() != "none":
+                        # Save the extracted preference
+                        save_memory(chat_guid, "user_preference", preference)
+                except Exception as e:
+                    print(f"Error extracting user preferences: {e}")
 
             return alfred_response
         except Exception as e:
@@ -903,3 +1073,195 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 server = ThreadedHTTPServer(("", 4321), PostHandler)
 print("Threaded server started on port 4321")
 server.serve_forever()
+
+def save_memory(chat_guid, memory_type, content):
+    """
+    Save a memory entry for a specific chat
+    memory_type can be: 'summary', 'key_info', 'user_preference', etc.
+    """
+    conn = sqlite3.connect("messages.db")
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO memory (chat_guid, memory_type, content) VALUES (?, ?, ?)",
+        (chat_guid, memory_type, content),
+    )
+    conn.commit()
+    conn.close()
+
+def get_memories(chat_guid, memory_type=None, limit=10):
+    """
+    Retrieve memories for a specific chat, optionally filtered by memory_type
+    """
+    conn = sqlite3.connect("messages.db")
+    c = conn.cursor()
+    
+    if memory_type:
+        c.execute(
+            "SELECT content, timestamp FROM memory WHERE chat_guid = ? AND memory_type = ? ORDER BY timestamp DESC LIMIT ?",
+            (chat_guid, memory_type, limit),
+        )
+    else:
+        c.execute(
+            "SELECT memory_type, content, timestamp FROM memory WHERE chat_guid = ? ORDER BY timestamp DESC LIMIT ?",
+            (chat_guid, limit),
+        )
+    
+    result = c.fetchall()
+    conn.close()
+    return result
+
+def get_conversation_history(chat_guid, limit=20):
+    """
+    Get conversation history formatted for use with language models
+    """
+    conn = sqlite3.connect("messages.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT sender, message, timestamp FROM messages WHERE chat_guid = ? ORDER BY timestamp DESC LIMIT ?",
+        (chat_guid, limit),
+    )
+    messages = c.fetchall()
+    conn.close()
+    
+    # Format messages for LLM context (in reverse chronological order to get oldest first)
+    formatted_messages = []
+    for sender, message, timestamp in reversed(messages):
+        if sender == "Alfred":
+            formatted_messages.append({"role": "assistant", "content": message})
+        else:
+            formatted_messages.append({"role": "user", "content": message})
+    
+    return formatted_messages
+
+def create_conversation_summary(chat_guid):
+    """
+    Create a summary of the conversation using the OpenAI API
+    """
+    conversation_history = get_conversation_history(chat_guid, limit=50)
+    if not conversation_history:
+        return None
+    
+    # Prepare the conversation for summarization
+    prompt = "Summarize the key points from this conversation in a concise way that captures important user information, preferences, and context:\n\n"
+    
+    for msg in conversation_history:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        prompt += f"{role}: {msg['content']}\n"
+    
+    # Generate summary using OpenAI
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that summarizes conversations. Extract key information, user preferences, and important context."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=400
+        )
+        summary = response.choices[0].message.content
+        
+        # Save the summary to memory
+        save_memory(chat_guid, "summary", summary)
+        return summary
+    except Exception as e:
+        print(f"Error creating conversation summary: {e}")
+        return None
+
+def clean_up_memories(chat_guid, max_memories=50):
+    """
+    Clean up memories for a chat to prevent excessive storage.
+    Keeps the most recent memories and summaries.
+    
+    Args:
+        chat_guid (str): The chat GUID
+        max_memories (int): Maximum number of memories to keep per type
+    """
+    conn = sqlite3.connect("messages.db")
+    c = conn.cursor()
+    
+    # Get memory types for this chat
+    c.execute(
+        "SELECT DISTINCT memory_type FROM memory WHERE chat_guid = ?",
+        (chat_guid,)
+    )
+    memory_types = [row[0] for row in c.fetchall()]
+    
+    # For each memory type, keep only the most recent entries
+    for memory_type in memory_types:
+        # Keep summaries as they are more important (only delete old ones)
+        if memory_type == "summary":
+            # Delete all but the 5 most recent summaries
+            c.execute(
+                """
+                DELETE FROM memory 
+                WHERE chat_guid = ? AND memory_type = ? AND id NOT IN (
+                    SELECT id FROM memory 
+                    WHERE chat_guid = ? AND memory_type = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT 5
+                )
+                """,
+                (chat_guid, memory_type, chat_guid, memory_type)
+            )
+        else:
+            # For other memory types, keep the most recent entries
+            c.execute(
+                """
+                DELETE FROM memory 
+                WHERE chat_guid = ? AND memory_type = ? AND id NOT IN (
+                    SELECT id FROM memory 
+                    WHERE chat_guid = ? AND memory_type = ? 
+                    ORDER BY timestamp DESC 
+                    LIMIT ?
+                )
+                """,
+                (chat_guid, memory_type, chat_guid, memory_type, max_memories // len(memory_types))
+            )
+    
+    conn.commit()
+    conn.close()
+    print(f"Cleaned up memories for chat_guid: {chat_guid}")
+
+def analyze_user_sentiment(chat_guid, message_text):
+    """
+    Analyze the sentiment of a user message and store it in memory.
+    
+    Args:
+        chat_guid (str): The chat GUID for the conversation
+        message_text (str): The message to analyze
+    """
+    try:
+        # Skip short messages as they may not have clear sentiment
+        if len(message_text) < 10:
+            return
+            
+        sentiment_prompt = f"Analyze the sentiment in this message: '{message_text}'. Return ONLY a single JSON object with these keys: 'sentiment' (positive, negative, neutral), 'emotion' (specific emotion), 'intensity' (1-5 scale)."
+        
+        sentiment_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You analyze sentiment in text. Return ONLY a JSON object with the requested fields."},
+                {"role": "user", "content": sentiment_prompt}
+            ],
+            max_tokens=100
+        )
+        
+        sentiment_data = json.loads(sentiment_response.choices[0].message.content)
+        
+        # Store the sentiment analysis in memory
+        save_memory(
+            chat_guid, 
+            "sentiment",
+            json.dumps(sentiment_data)
+        )
+        
+        # If strong negative sentiment detected, make a note of it
+        if sentiment_data.get("sentiment") == "negative" and sentiment_data.get("intensity", 0) >= 4:
+            save_memory(
+                chat_guid,
+                "important_note",
+                f"User expressed strong negative emotion ({sentiment_data.get('emotion')}) on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}."
+            )
+            
+    except Exception as e:
+        print(f"Error analyzing sentiment: {e}")
