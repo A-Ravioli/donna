@@ -1,77 +1,130 @@
-# Alfred - AI Assistant with Memory
+# Donna - Your Personal AI Assistant
 
-Alfred is an AI assistant that can communicate through iMessage using the BlueBubbles service. It features a sophisticated memory system that allows it to remember important information, user preferences, and conversational context.
+Donna is a powerful and versatile AI assistant that helps you manage your digital life through text messaging.
+
+## Features
+
+- **Natural Language Processing**: Communicate with Donna naturally using everyday language
+- **Memory System**: Donna remembers your preferences, previous conversations, and important details
+- **Platform Integrations**: Connect with various services like email, calendar, ride-sharing, and food delivery
+- **Subscription Management**: Handle subscriptions directly through text messaging
+- **Intelligent Responses**: Context-aware responses that understand the nuances of your requests
+- **Multi-Provider Support**: Use different LLM providers including OpenAI, Cerebras, and others
 
 ## Project Structure
 
-The codebase is organized into the following files and directories:
+The project follows a modular structure for better maintainability and scalability:
 
-```
-src/
-  ├─ server_new.py       # Main entry point for the server
-  ├─ server.py           # Legacy server file (to be replaced by server_new.py)
-  └─ modules/
-      ├─ __init__.py     # Package initialization
-      ├─ database.py     # Database operations
-      ├─ memory.py       # Memory management
-      ├─ message_handler.py # Message processing and responses
-      ├─ utils.py        # Utility functions
-      └─ http_handlers.py # HTTP request handlers
-```
+- **server.py**: Main entry point that initializes the server and handles HTTP requests
+- **modules/**: Core modules of the application
+  - **database.py**: Database operations and data persistence
+  - **memory.py**: Memory system for remembering user information and conversations
+  - **message_handler.py**: Processes incoming messages and generates responses
+  - **utils.py**: Utility functions for common operations
+  - **http_handlers.py**: Handles HTTP requests and webhook events
+  - **subscription_manager.py**: Manages subscription commands and payments
+  - **llm_providers.py**: Abstraction layer for different LLM providers
+  - **integrations/**: Platform integration modules
+    - **base.py**: Base classes for all integrations
+    - **email.py**: Email integration (sending, reading, searching emails)
+    - **calendar.py**: Calendar integration (scheduling, reminders)
+    - **transport.py**: Ride-sharing integrations (Uber, Lyft)
+    - **food.py**: Food delivery integrations (DoorDash, UberEats, Grubhub)
+    - **messaging.py**: Messaging integrations (Slack, Teams, Discord)
+    - **auth_utils.py**: Authentication utilities for integrations
 
 ## Memory System
 
-Alfred's memory system is designed to enhance the conversational experience by:
+Donna's memory system allows for:
 
-1. **Remembering User Information**: Alfred extracts and stores important entities mentioned by users.
-2. **Tracking Preferences**: Alfred identifies and remembers user preferences.
-3. **Conversation Summaries**: Periodically creates summaries of conversations to maintain context.
-4. **Sentiment Analysis**: Analyzes user emotions to adjust response tone appropriately.
-5. **Contextual Responses**: Uses previous interactions to provide personalized responses.
+- Creating conversation summaries to maintain context
+- Remembering user preferences and settings
+- Tracking important entities mentioned in conversations
+- Analyzing sentiment to provide appropriate responses
+- Storing integration usage data for personalized experiences
 
 ## Configuration
 
-The system uses environment variables for configuration. Create a `.env` file in the root directory with:
+To configure Donna, create a `.env` file in the root directory with the following variables:
 
 ```
-BLUEBUBBLES_SERVER_PASSWORD=your_password
-OPENAI_API_KEY=your_openai_api_key
-ALFRED_ASSISTANT_ID=your_assistant_id
-STRIPE_API_KEY=your_stripe_api_key
-STRIPE_WEBHOOK_SECRET=your_webhook_secret
-STRIPE_PAYMENT_LINK=your_payment_link
-RESEND_API_KEY=your_resend_api_key
+# BlueBubbles Server Configuration
+BLUEBUBBLES_SERVER_PASSWORD=your-bluebubbles-server-password
+
+# Default LLM Provider Configuration
+LLM_PROVIDER=openai
+OPENAI_MODEL=gpt-3.5-turbo
+
+# OpenAI Configuration
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_ASSISTANT_ID=your-openai-assistant-id
+
+# Stripe Configuration
+STRIPE_API_KEY=your-stripe-api-key
+STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
+STRIPE_PAYMENT_LINK=your-stripe-payment-link
+
+# Resend Configuration
+RESEND_API_KEY=your-resend-api-key
+
+# Subscription Management
+SECRET_SUBSCRIPTION_ACTIVATION_CODE=your-subscription-activation-code
+SECRET_SUBSCRIPTION_DEACTIVATION_CODE=your-subscription-deactivation-code
+
+# Additional configuration for integrations
+# See .env.example for all available options
 ```
 
 ## Getting Started
 
-1. Install the required dependencies:
+1. Clone the repository:
+   ```
+   git clone https://github.com/yourusername/donna.git
+   cd donna
+   ```
+
+2. Install dependencies:
    ```
    pip install -r requirements.txt
    ```
 
-2. Set up environment variables as described above.
+3. Create a `.env` file with your configuration
 
-3. Run the server:
+4. Start the server:
    ```
-   python src/server_new.py
+   python src/server.py
    ```
 
-## Migrating from the Old Server
+## iMessage Integration
 
-The new server structure is designed to be a drop-in replacement for the old server. After testing, you can replace the old server with the new one:
+Donna integrates with iMessage through BlueBubbles, allowing you to use your Mac as a server. See [IMESSAGE_SETUP.md](docs/IMESSAGE_SETUP.md) for detailed setup instructions.
 
-```
-mv src/server.py src/server_old.py
-mv src/server_new.py src/server.py
-```
+## Platform Integrations
+
+Donna can integrate with various platforms to help manage your digital life. See the [INTEGRATIONS.md](docs/INTEGRATIONS.md) document for details on how to use each integration.
+
+## LLM Providers
+
+Donna supports multiple LLM providers, allowing you to choose based on your needs and preferences. See [LLM_PROVIDERS.md](docs/LLM_PROVIDERS.md) for configuration details and supported providers.
 
 ## Contributing
 
-To add new features or modify existing ones, please follow the established code structure:
+We welcome contributions to Donna! Please follow these steps:
 
-1. Database operations go in `modules/database.py`
-2. Memory-related functions go in `modules/memory.py`
-3. Message handling goes in `modules/message_handler.py`
-4. Utility functions go in `modules/utils.py`
-5. HTTP request handlers go in `modules/http_handlers.py`
+1. Fork the repository
+2. Create a new branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Commit your changes (`git commit -m 'Add some amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgements
+
+- [OpenAI](https://openai.com/) for providing the AI capabilities
+- [Stripe](https://stripe.com/) for payment processing
+- [BlueBubbles](https://bluebubbles.app/) for iMessage integration
+- [LangChain](https://langchain.com/) for the LLM abstraction layer

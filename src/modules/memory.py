@@ -3,6 +3,10 @@ import sqlite3
 import openai
 from datetime import datetime, timezone
 from .database import save_message, get_recent_messages, get_total_message_count
+from .llm_providers import get_model_provider, default_provider
+
+# Use the configured model provider
+model_provider = default_provider
 
 def save_memory(chat_guid, memory_type, content):
     """
@@ -33,23 +37,30 @@ def get_memories(chat_guid, memory_type=None, limit=10):
         limit (int): Maximum number of memories to retrieve
         
     Returns:
-        list: A list of (memory_type, content, timestamp) tuples
+        list: A list of memory dictionaries containing memory_type, content, and timestamp
     """
     conn = sqlite3.connect("messages.db")
+    conn.row_factory = sqlite3.Row  # This enables dictionary access for rows
     c = conn.cursor()
     
     if memory_type:
         c.execute(
-            "SELECT content, timestamp FROM memory WHERE chat_guid = ? AND memory_type = ? ORDER BY timestamp DESC LIMIT ?",
+            """SELECT id, memory_type, content, timestamp 
+               FROM memory 
+               WHERE chat_guid = ? AND memory_type = ? 
+               ORDER BY timestamp DESC LIMIT ?""",
             (chat_guid, memory_type, limit),
         )
     else:
         c.execute(
-            "SELECT memory_type, content, timestamp FROM memory WHERE chat_guid = ? ORDER BY timestamp DESC LIMIT ?",
+            """SELECT id, memory_type, content, timestamp 
+               FROM memory 
+               WHERE chat_guid = ? 
+               ORDER BY timestamp DESC LIMIT ?""",
             (chat_guid, limit),
         )
     
-    result = c.fetchall()
+    result = [dict(row) for row in c.fetchall()]
     conn.close()
     return result
 
@@ -76,7 +87,7 @@ def get_conversation_history(chat_guid, limit=20):
     # Format messages for LLM context (in reverse chronological order to get oldest first)
     formatted_messages = []
     for sender, message, timestamp in reversed(messages):
-        if sender == "alfred@gtfol.inc":
+        if sender == "donna@gtfol.inc":
             formatted_messages.append({"role": "assistant", "content": message})
         else:
             formatted_messages.append({"role": "user", "content": message})
@@ -85,7 +96,7 @@ def get_conversation_history(chat_guid, limit=20):
 
 def create_conversation_summary(chat_guid):
     """
-    Create a summary of the conversation using the OpenAI API
+    Create a summary of the conversation using the configured LLM provider
     
     Args:
         chat_guid (str): The chat GUID to summarize
@@ -104,17 +115,13 @@ def create_conversation_summary(chat_guid):
         role = "User" if msg["role"] == "user" else "Assistant"
         prompt += f"{role}: {msg['content']}\n"
     
-    # Generate summary using OpenAI
+    # Generate summary using the configured provider
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes conversations. Extract key information, user preferences, and important context."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=400
+        system_prompt = "You are a helpful assistant that summarizes conversations. Extract key information, user preferences, and important context."
+        summary = model_provider.generate_response(
+            prompt, 
+            context=[{"role": "system", "content": system_prompt}]
         )
-        summary = response.choices[0].message.content
         
         # Save the summary to memory
         save_memory(chat_guid, "summary", summary)
@@ -193,16 +200,22 @@ def analyze_user_sentiment(chat_guid, message_text):
             
         sentiment_prompt = f"Analyze the sentiment in this message: '{message_text}'. Return ONLY a single JSON object with these keys: 'sentiment' (positive, negative, neutral), 'emotion' (specific emotion), 'intensity' (1-5 scale)."
         
-        sentiment_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You analyze sentiment in text. Return ONLY a JSON object with the requested fields."},
-                {"role": "user", "content": sentiment_prompt}
-            ],
-            max_tokens=100
+        system_prompt = "You analyze sentiment in text. Return ONLY a JSON object with the requested fields."
+        sentiment_response = model_provider.generate_response(
+            sentiment_prompt,
+            context=[{"role": "system", "content": system_prompt}]
         )
         
-        sentiment_data = json.loads(sentiment_response.choices[0].message.content)
+        try:
+            sentiment_data = json.loads(sentiment_response)
+        except json.JSONDecodeError:
+            # Fallback in case the model doesn't return valid JSON
+            sentiment_data = {
+                "sentiment": "neutral",
+                "emotion": "unknown",
+                "intensity": 2,
+                "note": "Failed to parse model response as JSON"
+            }
         
         # Store the sentiment analysis in memory
         save_memory(
@@ -234,17 +247,14 @@ def extract_user_preferences(chat_guid, message):
         return
         
     try:
-        # Extract preferences using OpenAI
+        # Extract preferences using the configured provider
         preference_prompt = f"Extract any user preferences from this message: '{message}'. If no preferences found, respond with 'None'."
-        preference_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You extract user preferences from text. Be concise."},
-                {"role": "user", "content": preference_prompt}
-            ],
-            max_tokens=100
+        system_prompt = "You extract user preferences from text. Be concise."
+        
+        preference = model_provider.generate_response(
+            preference_prompt,
+            context=[{"role": "system", "content": system_prompt}]
         )
-        preference = preference_response.choices[0].message.content
         
         if preference.lower() != "none":
             # Save the extracted preference
@@ -266,16 +276,19 @@ def extract_entities(chat_guid, message_text):
         
     try:
         entity_prompt = f"Extract any key entities or information from this message that should be remembered: '{message_text}'. Format as a JSON list of key-value pairs. If none, return empty list []."
-        entity_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You extract structured information from text. Return ONLY a valid JSON array of key-value pairs."},
-                {"role": "user", "content": entity_prompt}
-            ],
-            max_tokens=200
+        system_prompt = "You extract structured information from text. Return ONLY a valid JSON array of key-value pairs."
+        
+        entity_response = model_provider.generate_response(
+            entity_prompt,
+            context=[{"role": "system", "content": system_prompt}]
         )
         
-        entities = json.loads(entity_response.choices[0].message.content)
+        try:
+            entities = json.loads(entity_response)
+        except json.JSONDecodeError:
+            # Fallback if the model doesn't return valid JSON
+            print(f"Failed to parse entity extraction response as JSON: {entity_response}")
+            return
         
         # Save extracted entities to memory
         if entities and isinstance(entities, list) and len(entities) > 0:

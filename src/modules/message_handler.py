@@ -4,7 +4,7 @@ import os
 from time import sleep
 from datetime import datetime, timezone
 
-from .database import save_message, get_total_message_count
+from .database import save_message, get_total_message_count, get_thread_id, save_thread_id
 from .memory import (
     get_memories,
     create_conversation_summary,
@@ -15,28 +15,36 @@ from .memory import (
     save_memory
 )
 from .utils import send_text, share_contact_card, download_and_process_attachment
+from .integrations import registry as integration_registry
+from .llm_providers import get_model_provider, default_provider
 
-# OpenAI API key and Alfred's assistant ID
+# Get the LLM provider from environment or use default
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+model_provider = get_model_provider(LLM_PROVIDER)
+
+# For backward compatibility with direct OpenAI calls elsewhere in the code
 openai.api_key = os.getenv("OPENAI_API_KEY")
-alfred_assistant_id = os.getenv("ALFRED_ASSISTANT_ID")
+donna_assistant_id = os.getenv("OPENAI_ASSISTANT_ID")
 
-# Stripe payment link
-STRIPE_PAYMENT_LINK = os.getenv("STRIPE_PAYMENT_LINK")
+# Get the payment link from the environment
+STRIPE_PAYMENT_LINK = os.getenv("STRIPE_PAYMENT_LINK", "")
 
 # Welcome message for new users
-WELCOME_MESSAGE = """Hello! 👋 I'm Alfred, your AI assistant.
+WELCOME_MESSAGE = """
+Hello! I'm Donna, your personal AI assistant. I can help with various tasks:
 
-I can help you with a variety of tasks such as:
-• Answering questions
-• Providing recommendations
-• Assisting with research
+• Answer questions and provide information
+• Assist with scheduling and reminders
+• Help with online shopping and orders
+• Send messages to your contacts
 • And much more!
 
-Just let me know what you need help with, and I'll do my best to assist you."""
+How can I help you today?
+"""
 
-def process_message_with_alfred(chat_guid, message_text, data, is_first_message):
+def process_message_with_donna(chat_guid, message_text, data, is_first_message):
     """
-    Processes a message with Alfred.
+    Processes a message with Donna.
 
     Args:
         chat_guid (str): The chat GUID for the conversation
@@ -49,6 +57,23 @@ def process_message_with_alfred(chat_guid, message_text, data, is_first_message)
         # Initialize memory for new user
         initial_summary = f"New conversation started on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}."
         save_memory(chat_guid, "summary", initial_summary)
+        return
+
+    # Check if this message can be handled by one of our integrations
+    sender = data.get("data", {}).get("handle", {}).get("address", "unknown")
+    integration_response = check_integrations(chat_guid, message_text, sender)
+    if integration_response:
+        # Message was handled by an integration, send the response
+        print(f"Message handled by integration: {integration_response[:50]}...")
+        donna_message_guid = send_text(chat_guid, integration_response)
+        if donna_message_guid:
+            save_message(
+                chat_guid,
+                "donna@gtfol.inc",
+                integration_response,
+                donna_message_guid,
+            )
+            print("Integration response dispatched and saved")
         return
 
     # Analyze user sentiment (for messages longer than 10 characters)
@@ -64,32 +89,32 @@ def process_message_with_alfred(chat_guid, message_text, data, is_first_message)
     if attachments:
         file_id = process_attachments(attachments)
 
-    print("Detected incoming message... Processing with Alfred...")
+    print("Detected incoming message... Processing with Donna...")
 
     # Extract any user preferences
     extract_user_preferences(chat_guid, message_text)
 
-    # Create Alfred's response
-    assistant_response = create_alfred_response(
+    # Create Donna's response
+    assistant_response = create_donna_response(
         chat_guid, message_text, file_id, chat_guid.startswith("iMessage;+;")
     )
 
-    print("Dispatching Alfred's response...")
-    alfred_message_guid = send_text(chat_guid, assistant_response)
-    if alfred_message_guid:
+    print("Dispatching Donna's response...")
+    donna_message_guid = send_text(chat_guid, assistant_response)
+    if donna_message_guid:
         # Only save the message if it's not the payment link response
         if STRIPE_PAYMENT_LINK not in assistant_response:
             save_message(
                 chat_guid,
-                "alfred@gtfol.inc",
+                "donna@gtfol.inc",
                 assistant_response,
-                alfred_message_guid,
+                donna_message_guid,
             )
             print("Response dispatched and saved")
         else:
             print("Payment request message sent")
     else:
-        print("Failed to get message_guid for Alfred's response")
+        print("Failed to get message_guid for Donna's response")
     
     # Clean up old memories periodically
     total_messages = get_total_message_count(chat_guid)
@@ -99,213 +124,141 @@ def process_message_with_alfred(chat_guid, message_text, data, is_first_message)
 
 def send_welcome_message(chat_guid):
     """
-    Sends the welcome message to a new user.
-
+    Send a welcome message to a new user.
+    
     Args:
-        chat_guid (str): The chat GUID to send the message to
+        chat_guid (str): The chat GUID to send the welcome message to
     """
-    # Share Alfred's contact card
-    contact_card_shared = share_contact_card(chat_guid)
-    if contact_card_shared:
-        print(f"Contact card shared with chat_guid: {chat_guid}")
+    print("New conversation detected. Sending welcome message...")
+    welcome_guid = send_text(chat_guid, WELCOME_MESSAGE)
+    if welcome_guid:
+        save_message(chat_guid, "donna@gtfol.inc", WELCOME_MESSAGE, welcome_guid)
+        print("Welcome message sent")
     else:
-        print(f"Failed to share contact card with chat_guid: {chat_guid}")
-
-    # Send welcome message
-    alfred_message_guid = send_text(chat_guid, WELCOME_MESSAGE)
-    if alfred_message_guid:
-        save_message(
-            chat_guid,
-            "alfred@gtfol.inc",
-            WELCOME_MESSAGE,
-            alfred_message_guid,
-        )
-        print(f"Welcome message sent to chat_guid: {chat_guid}")
-    else:
-        print(f"Failed to send welcome message to chat_guid: {chat_guid}")
+        print("Failed to get message_guid for welcome message")
 
 
 def process_attachments(attachments):
     """
-    Processes attachments and uploads image to OpenAI if available.
-
+    Process any attachments in the message.
+    
     Args:
-        attachments (list): List of attachment dictionaries
-
+        attachments (list): List of attachment objects
+        
     Returns:
-        str: OpenAI file ID or None
+        str: File ID if an attachment was processed, None otherwise
     """
+    if not attachments:
+        return None
+    
     for attachment in attachments:
-        if attachment.get("mimeType", "").startswith("image/"):
-            try:
-                # Download and process the attachment
-                temp_file_path = download_and_process_attachment(attachment)
-                if not temp_file_path:
-                    continue
-
-                # Upload the image to OpenAI
-                with open(temp_file_path, "rb") as file:
-                    openai_file = openai.files.create(file=file, purpose="vision")
-
-                return openai_file.id
-            except Exception as e:
-                print(f"Error uploading file to OpenAI: {e}")
+        print(f"Processing attachment: {attachment}")
+        file_path = download_and_process_attachment(attachment)
+        if file_path:
+            # For now, we just return the file path as the ID
+            return file_path
+    
     return None
 
 
-def create_alfred_response(chat_guid, message, file_id=None, is_group_chat=False):
+def create_donna_response(chat_guid, message, file_id=None, is_group_chat=False):
     """
-    Creates a response from Alfred using the OpenAI API.
-
-    Args:
-        chat_guid (str): The chat GUID for the conversation
-        message (str): The message to process
-        file_id (str): OpenAI file ID for the image, if available
-        is_group_chat (bool): Whether this is a group chat
-
-    Returns:
-        str: Alfred's response
-    """
-    from .database import get_thread_id, save_thread_id, get_recent_messages
+    Create a response using Donna.
     
+    Args:
+        chat_guid (str): The chat GUID
+        message (str): The user message
+        file_id (str, optional): The file ID of any attachment
+        is_group_chat (bool, optional): Whether this is a group chat
+        
+    Returns:
+        str: Donna's response
+    """
     try:
-        # Check if there's an existing thread for this conversation
-        thread_id = get_thread_id(chat_guid)
-        if thread_id:
-            thread = openai.beta.threads.retrieve(thread_id)
-        else:
-            thread = openai.beta.threads.create()
-            save_thread_id(chat_guid, thread.id)
-
-        # Create message content
-        content = []
-        
-        # Fetch memory information for the user
+        # Get memories for context
         memories = get_memories(chat_guid)
-        conversation_summary = None
-        user_preferences = None
-        sentiment_data = None
-        important_notes = []
-        entities = {}
         
-        # Extract relevant memories
-        for mem_type, mem_content, _ in memories:
-            if mem_type == "summary":
-                conversation_summary = mem_content
-            elif mem_type == "user_preference":
-                user_preferences = mem_content
-            elif mem_type == "sentiment":
-                try:
-                    sentiment_data = json.loads(mem_content)
-                except:
-                    pass
-            elif mem_type == "important_note":
-                important_notes.append(mem_content)
-            elif mem_type.startswith("entity_"):
-                entity_key = mem_type.replace("entity_", "")
-                entities[entity_key] = mem_content
+        # Create or get thread for this chat
+        thread_id = get_thread_id(chat_guid)
+        if not thread_id:
+            thread_id = model_provider.create_thread()
+            save_thread_id(chat_guid, thread_id)
         
-        # Add memory context if available
-        memory_context = ""
-        if conversation_summary:
-            memory_context += f"Previous conversation summary: {conversation_summary}\n\n"
+        # Add the user message to the thread
+        model_provider.add_message_to_thread(thread_id, message)
         
-        if user_preferences:
-            memory_context += f"User preferences: {user_preferences}\n\n"
-            
-        if sentiment_data:
-            memory_context += f"User's recent sentiment: {sentiment_data.get('sentiment', 'unknown')}, "
-            memory_context += f"emotion: {sentiment_data.get('emotion', 'unknown')}, "
-            memory_context += f"intensity: {sentiment_data.get('intensity', 'unknown')}\n\n"
+        # Prepare additional context from memories
+        additional_instructions = "Use the following information in your response if relevant:"
         
-        if important_notes:
-            memory_context += "Important notes about this user:\n"
-            for note in important_notes[:3]:  # Limit to 3 most recent notes
-                memory_context += f"- {note}\n"
-            memory_context += "\n"
-            
-        if entities:
-            memory_context += "Known entities from previous conversations:\n"
-            for key, value in entities.items():
-                memory_context += f"- {key}: {value}\n"
-            memory_context += "\n"
+        # Add memories to instructions if available
+        if memories:
+            for memory in memories:
+                memory_type = memory["memory_type"]
+                content = memory["content"]
+                if memory_type == "summary":
+                    additional_instructions += f"\nConversation summary: {content}"
+                elif memory_type == "user_preference":
+                    additional_instructions += f"\nUser preference: {content}"
+                elif memory_type == "key_info":
+                    additional_instructions += f"\nKey information: {content}"
+                elif memory_type == "entity":
+                    additional_instructions += f"\nRelevant entity: {content}"
+                elif memory_type == "sentiment":
+                    additional_instructions += f"\nUser sentiment: {content}"
+                elif memory_type == "integration_usage":
+                    additional_instructions += f"\nPrevious integration usage: {content}"
         
-        # Get recent conversation history
-        recent_messages = get_recent_messages(chat_guid, 5)
-        conversation_context = ""
-        
-        if recent_messages:
-            conversation_context = "Recent conversation:\n"
-            for sender, msg in recent_messages:
-                # Format the sender name to be more readable
-                display_name = "You" if sender == "alfred@gtfol.inc" else "User"
-                conversation_context += f"{display_name}: {msg}\n"
-        
-        # Create a complete context combining memory and recent messages
-        complete_context = ""
-        if memory_context or conversation_context:
-            complete_context = "CONTEXT (not visible to user):\n"
-            if memory_context:
-                complete_context += memory_context
-            if conversation_context:
-                complete_context += conversation_context
-            complete_context += "\nEnd of context. Use this information to provide a more personalized response. Adjust your tone based on the user's sentiment if available.\n\n"
-            
-            # Add context to the message content
-            content.append({"type": "text", "text": complete_context})
-
-        # If it's a group chat, include additional recent messages for context
+        # Add instructions for group chat if applicable
         if is_group_chat:
-            group_recent_messages = get_recent_messages(chat_guid, 15)
-            if group_recent_messages:
-                group_context = "Here are the recent messages in the group chat:\n\n"
-                for sender, msg in group_recent_messages:
-                    group_context += f"{sender}: {msg}\n"
-                group_context += "\nPlease consider this context when responding to the following message:\n"
-                content.append({"type": "text", "text": group_context})
-
-        if message:
-            content.append({"type": "text", "text": message})
-        elif file_id:
-            content.append(
-                {
-                    "type": "text",
-                    "text": "Please look at this image and provide your thoughts on it.",
-                }
-            )
-
-        if file_id:
-            content.append(
-                {"type": "image_file", "image_file": {"file_id": file_id}}
-            )
-
-        # Create the message in the thread
-        openai.beta.threads.messages.create(
-            thread_id=thread.id, role="user", content=content
-        )
-
-        run = openai.beta.threads.runs.create(
-            thread_id=thread.id, assistant_id=alfred_assistant_id
-        )
-
-        # Wait for the run to complete
-        while run.status != "completed":
-            run = openai.beta.threads.runs.retrieve(
-                thread_id=thread.id, run_id=run.id
-            )
-            sleep(1)
-
-        # Retrieve Alfred's response
-        messages = openai.beta.threads.messages.list(thread_id=thread.id)
-        alfred_response = messages.data[0].content[0].text.value
+            additional_instructions += "\nThis is a group chat. Keep your responses concise and clearly addressed to the person who messaged you."
         
-        # Update conversation summary periodically 
-        # (e.g., every 10 messages or when certain keywords are detected)
+        # Run the thread with the additional context
+        response_text = model_provider.run_thread(thread_id, additional_instructions)
+        
+        # Create a conversation summary every 10 messages
         total_messages = get_total_message_count(chat_guid)
-        if total_messages % 10 == 0:  # Create a summary every 10 messages
+        if total_messages % 10 == 0:
             create_conversation_summary(chat_guid)
-
-        return alfred_response
+        
+        return response_text
+    
     except Exception as e:
-        print(f"❌ Error processing message with Alfred: {e}")
+        print(f"❌ Error processing message with Donna: {e}")
         return "I'm sorry, I encountered an error while processing your message." 
+
+
+def check_integrations(chat_guid, message_text, user_id):
+    """
+    Check if a message can be handled by one of our platform integrations.
+    
+    Args:
+        chat_guid (str): The chat GUID
+        message_text (str): The message text
+        user_id (str): The user ID (typically email or phone number)
+        
+    Returns:
+        str: The integration response if handled, None otherwise
+    """
+    # Check if any integration can handle this message
+    integration = integration_registry.find_integration_for_message(message_text)
+    
+    if integration:
+        print(f"Found integration that can handle message: {integration.get_name()}")
+        try:
+            # Process the message with the integration
+            response = integration.process(user_id, message_text)
+            
+            # Add memory of this integration interaction
+            save_memory(
+                chat_guid,
+                "integration_usage",
+                f"Used {integration.get_name()} integration: {message_text[:100]}..."
+            )
+            
+            return response
+        except Exception as e:
+            print(f"Error processing message with integration {integration.get_name()}: {e}")
+            # Return a graceful error message
+            return f"I tried to process your request with {integration.get_name()}, but encountered an error. Please try again or provide more details."
+    
+    return None 

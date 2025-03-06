@@ -123,7 +123,7 @@ class SlackTeamsIntegration(BaseIntegration):
                 
                 response = f"Your {platform_name} integration has been set up! "
                 response += f"I'll use the workspace '{workspace}' and default channel '{default_channel}'. "
-                response += f"You can now send {platform_name} messages through Alfred by saying 'Send a {platform_name} message to [channel]'."
+                response += f"You can now send {platform_name} messages through donna by saying 'Send a {platform_name} message to [channel]'."
                 
                 return response
             else:
@@ -466,7 +466,7 @@ class DiscordIntegration(BaseIntegration):
                 
                 response = "Your Discord integration has been set up! "
                 response += f"I'll use the server '{server_name}' and default channel '#{default_channel}'. "
-                response += "You can now send Discord messages through Alfred by saying 'Send a Discord message to [channel]'."
+                response += "You can now send Discord messages through donna by saying 'Send a Discord message to [channel]'."
                 
                 return response
             else:

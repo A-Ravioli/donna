@@ -108,7 +108,7 @@ class UberLyftIntegration(BaseIntegration):
                 if work_address:
                     response += f"I've saved your work address as '{work_address}'. "
                 
-                response += f"You can now order rides through Alfred by saying 'Get me an {service}' or 'I need a ride to [destination]'."
+                response += f"You can now order rides through donna by saying 'Get me an {service}' or 'I need a ride to [destination]'."
                 return response
             else:
                 return f"There was an error setting up your {service} account. Please try again."

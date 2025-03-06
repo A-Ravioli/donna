@@ -114,7 +114,7 @@ class CalendarIntegration(BaseIntegration):
             
             if self.store_credentials(user_id, credentials):
                 self._update_calendar_settings(user_id, calendar_type)
-                return f"Your {calendar_type.capitalize()} Calendar has been set up! You can now schedule meetings and check your calendar through Alfred."
+                return f"Your {calendar_type.capitalize()} Calendar has been set up! You can now schedule meetings and check your calendar through donna."
             else:
                 return f"There was an error setting up your {calendar_type.capitalize()} Calendar. Please try again."
         

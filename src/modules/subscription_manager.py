@@ -137,7 +137,7 @@ def handle_subscription_command(chat_guid, message_text, sender):
         # Include plan details in the response
         plan_details = SUBSCRIPTION_PLANS.get(plan, SUBSCRIPTION_PLANS["premium"])
         
-        response = f"Thanks for your interest in subscribing to Alfred! The {plan} plan costs {plan_details['price']} and includes {plan_details['description']}.\n\nTo complete your subscription, please click the link I'm about to send. If you provided an email, you'll receive a confirmation once your subscription is active."
+        response = f"Thanks for your interest in subscribing to donna! The {plan} plan costs {plan_details['price']} and includes {plan_details['description']}.\n\nTo complete your subscription, please click the link I'm about to send. If you provided an email, you'll receive a confirmation once your subscription is active."
         
         # Save information to memory
         save_memory(chat_guid, "subscription_intent", json.dumps({
@@ -213,7 +213,7 @@ def process_payment_confirmation(customer_id, subscription_id=None, plan="premiu
         # if phone_number:
         #     chat_guid = find_chat_guid_by_phone(phone_number)
         #     if chat_guid:
-        #         send_text(chat_guid, "Your subscription is now active! Thank you for subscribing to Alfred.")
+        #         send_text(chat_guid, "Your subscription is now active! Thank you for subscribing to donna.")
         
         return True
     except Exception as e:

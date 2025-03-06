@@ -1,4 +1,4 @@
-# Alfred platform integrations package
+# donna platform integrations package
 
 from .base import BaseIntegration, IntegrationRegistry
 from .email import EmailIntegration

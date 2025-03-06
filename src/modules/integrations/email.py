@@ -96,7 +96,7 @@ class EmailIntegration(BaseIntegration):
                         email_address
                     )
                     
-                    return f"Your email {email_address} has been successfully set up! You can now send and receive emails through Alfred."
+                    return f"Your email {email_address} has been successfully set up! You can now send and receive emails through donna."
                 else:
                     return "There was an error setting up your email. Please try again."
             else:
@@ -126,8 +126,8 @@ class EmailIntegration(BaseIntegration):
             else:
                 to_email = to_match.group(1)
                 
-            subject = subject_match.group(1) if subject_match else "Message from Alfred"
-            body = body_match.group(1) if body_match else "This email was sent via Alfred assistant."
+            subject = subject_match.group(1) if subject_match else "Message from donna"
+            body = body_match.group(1) if body_match else "This email was sent via donna assistant."
             
             # If there's no explicit body but there's content after "to: email@example.com",
             # use that as the body

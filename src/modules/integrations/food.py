@@ -130,7 +130,7 @@ class FoodDeliveryIntegration(BaseIntegration):
                 if favorite_restaurants:
                     response += f"Your favorite restaurants: {', '.join(favorite_restaurants)}. "
                 
-                response += f"You can now order food through Alfred by saying 'Order food from [restaurant]' or 'Get me some pizza'."
+                response += f"You can now order food through donna by saying 'Order food from [restaurant]' or 'Get me some pizza'."
                 return response
             else:
                 return f"There was an error setting up your {service.capitalize()} account. Please try again."

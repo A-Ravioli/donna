@@ -63,7 +63,7 @@ def share_contact_card(chat_guid):
         params = {
             "password": server_password,
             "chatGuid": chat_guid,
-            "contact": "Alfred Butler",
+            "contact": "donna Butler",
         }
 
         # Share the contact
@@ -97,15 +97,15 @@ def send_activation_email(to_email, name):
     try:
         # Email parameters
         params = {
-            "from": "Alfred <alfred@getfromtheotherlane.com>",
+            "from": "donna <donna@getfromtheotherlane.com>",
             "to": to_email,
-            "subject": "Welcome to Alfred!",
+            "subject": "Welcome to donna!",
             "html": f"""
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2>Welcome to Alfred, {name}!</h2>
-                <p>Your subscription is now active. You can text Alfred at any time for assistance.</p>
+                <h2>Welcome to donna, {name}!</h2>
+                <p>Your subscription is now active. You can text donna at any time for assistance.</p>
                 <p>For any questions or issues, just reply to this email.</p>
-                <p>Best regards,<br>Alfred</p>
+                <p>Best regards,<br>donna</p>
             </div>
             """,
         }
@@ -136,7 +136,7 @@ def send_failed_cancellation_email(name, email, phone_number):
         
         # Email parameters
         params = {
-            "from": "Alfred <alfred@getfromtheotherlane.com>",
+            "from": "donna <donna@getfromtheotherlane.com>",
             "to": "team@getfromtheotherlane.com",  # Notify the team
             "subject": "Failed Subscription Cancellation",
             "html": f"""
