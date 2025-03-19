@@ -1,3 +1,0 @@
-"""
-Database operations for Donna
-""" 

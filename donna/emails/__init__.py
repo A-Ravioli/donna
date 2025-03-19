@@ -1,3 +1,0 @@
-"""
-Email operations for Donna
-""" 

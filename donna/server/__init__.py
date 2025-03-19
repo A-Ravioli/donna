@@ -1,3 +1,0 @@
-"""
-Server operations for Donna
-""" 
