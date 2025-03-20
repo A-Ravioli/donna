@@ -606,7 +606,7 @@ class PostHandler(BaseHTTPRequestHandler):
                 print("Expiration notice sent")
             else:
                 print("Failed to send expiration notice")
-        elif alfred_message_count >= 30:
+        elif alfred_message_count >= 3000:
             alfred_message_guid = send_text(chat_guid, PAYMENT_MESSAGE)
             if alfred_message_guid:
                 print("Payment request message sent")
